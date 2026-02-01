@@ -49,7 +49,7 @@ local gameOver = false
 local cappedComs = {}
 
 local awardData = {}
-
+local awardDataPlayer = {}
 
 local minReclaimRatio = 0.15
 
@@ -72,11 +72,9 @@ local veryEasyFactor = 0.3
 local awardEasyFactors = {
 	shell     = basicEasyFactor,
 	fire      = basicEasyFactor,
-
 	nux       = veryEasyFactor,
 	kam       = veryEasyFactor,
 	comm      = veryEasyFactor,
-
 	reclaim   = 0.2,
 	slow      = 2,
 	disarm    = 4,
@@ -131,9 +129,7 @@ local function comma_value(amount)
 	local k
 	while true do
 		formatted, k = formatted:gsub("^(-?%d+)(%d%d%d)", '%1,%2')
-		if (k==0) then
-			break
-		end
+		if (k==0) then break end
 	end
 	return formatted
 end
@@ -141,11 +137,8 @@ end
 local function getMeanDamageExcept(excludeTeam)
 	local mean = 0
 	local count = 0
-	--for team,dmg in pairs(damageList) do
 	for team,dmg in pairs(awardData.pwn) do
-		if team ~= excludeTeam
-			and dmg > 100
-		then
+		if team ~= excludeTeam and dmg > 100 then
 			mean = mean + dmg
 			count = count + 1
 		end
@@ -162,7 +155,6 @@ local function getMaxVal(valList)
 			--Spring.Echo(" Team ".. winTeam .." maxVal ".. maxVal) --debug
 		end
 	end
-
 	return winTeam, maxVal
 end
 
@@ -201,8 +193,14 @@ local function AddAwardPoints( awardType, teamID, amount )
 	end
 end
 
-local function ProcessAwardData()
+local function AddAwardPointsPlayer(awardType, playerID, amount)
+	if playerID then
+		awardDataPlayer[awardType][playerID] =
+			(awardDataPlayer[awardType][playerID] or 0) + (amount or 0)
+	end
+end
 
+local function ProcessAwardData()
 	for awardType, data in pairs(awardData) do
 		local winningTeam
 		local maxVal
@@ -215,15 +213,12 @@ local function ProcessAwardData()
 			winningTeam = expUnitTeam
 		else
 			winningTeam, maxVal = getMaxVal(data)
-
 		end
 
 		if winningTeam then
-
 			local compare
 			if absolute then
 				compare = absolute
-
 			else
 				compare = getMeanDamageExcept(winningTeam) * easyFactor
 			end
@@ -276,6 +271,7 @@ local function ProcessAwardData()
 				end
 			end
 		end --if winningTeam
+
 		if message then
 			awardAward(winningTeam, awardType, message)
 		end
@@ -287,31 +283,26 @@ end
 -- Callins
 
 function gadget:Initialize()
-
 	GG.Awards = GG.Awards or {}
 	GG.Awards.AddAwardPoints = AddAwardPoints
-	
-	local tempTeamList = Spring.GetTeamList()
-	for i=1, #tempTeamList do
-		local team = tempTeamList[i]
-		--Spring.Echo('team', team)
+
+	for _, team in ipairs(Spring.GetTeamList()) do
 		if team ~= gaiaTeamID then
 			totalTeamList[team] = team
 		end
 	end
 
-	--new
 	for awardType, _ in pairs(awardDescs) do
 		awardData[awardType] = {}
+		awardDataPlayer[awardType] = {}
 	end
+
 	for _,team in pairs(totalTeamList) do
 		awardList[team] = {}
-
 		for awardType, _ in pairs(awardDescs) do
 			awardData[awardType][team] = 0
 		end
 	end
-
 	local shipSMClass = Game.speedModClasses.Ship
 	for i = 1, #UnitDefs do
 		local ud = UnitDefs[i]
@@ -407,23 +398,22 @@ function gadget:UnitDestroyed(unitID, unitDefID, unitTeam, _, _, killerTeam)
 	end
 end
 
+-- Called whenever a unit takes damage.
+-- Used to collect combat-related statistics.
 function gadget:UnitDamaged(unitID, unitDefID, unitTeam, damage, paralyzer, weaponID,
 		attackerID, attackerDefID, attackerTeam)
+
 	if (unitTeam == gaiaTeamID) then return end
 	local hp, maxHP = spGetUnitHealth(unitID)
-	if (hp < 0) then
-		damage = damage + hp
-	end
-	if damage < 0 then
-		-- can happen with the EMP component of mixed weapons, when last-hitting
-		return
-	end
+	if (hp < 0) then damage = damage + hp end
+	if damage < 0 then return end
+
 	AddAwardPoints( 'ouch', unitTeam, damage )
 
-	if (not attackerTeam)
-		or (attackerTeam == unitTeam)
-		or (attackerTeam == gaiaTeamID)
-		then return end
+	local victimPlayerID = Spring.GetUnitRulesParam(unitID, "playerID")
+	AddAwardPointsPlayer('ouch', victimPlayerID, damage)
+
+	if (not attackerTeam) or (attackerTeam == unitTeam) or (attackerTeam == gaiaTeamID) then return end
 
 	local costdamage = (damage / maxHP) * GetUnitCost(unitID, unitDefID)
 
@@ -462,18 +452,29 @@ function gadget:UnitDamaged(unitID, unitDefID, unitTeam, damage, paralyzer, weap
 
 			elseif comms[attackerDefID] then
 				AddAwardPoints( 'comm', attackerTeam, costdamage )
+			end
 
+			AddAwardPoints( 'pwn', attackerTeam, costdamage )
+			if attackerID then
+				local attackerPlayerID = Spring.GetUnitRulesParam(attackerID, "playerID")
+				AddAwardPointsPlayer('pwn', attackerPlayerID, costdamage)
 			end
 		end
 	end
 end
 
+-- Called when a unit finishes construction.
+-- Used for economy-related awards.
 function gadget:UnitFinished(unitID, unitDefID, teamID)
 	if unitDefID == mexDefID then
 		AddAwardPoints( 'mex', teamID, 1 )
+		local playerID = Spring.GetUnitRulesParam(unitID, "playerID")
+		AddAwardPointsPlayer('mex', playerID, 1)
 	end
 end
 
+-- Called once when the game ends.
+-- Finalizes all awards and exposes end-of-game statistics.
 function gadget:GameOver()
 	gameOver = true
 
@@ -496,8 +497,8 @@ function gadget:GameOver()
 	end
 
 	ProcessAwardData()
-
 	_G.awardList = awardList
+	_G.awardDataPlayer = awardDataPlayer
 end
 
 -------------------------------------------------------------------------------------
